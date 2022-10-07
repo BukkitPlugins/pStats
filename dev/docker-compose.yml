@@ -64,4 +64,4 @@ services:
       - bstats-backend
       - bstats-legacy
     ports:
-      - "89:89"
+      - "80:80"
