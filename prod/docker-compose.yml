@@ -43,6 +43,11 @@ services:
   # Multiple instances of the backend server
   bstats-backend-1: &bstats-backend
     build: ../bstats-backend
+    restart: unless-stopped
+    ulimits: &ulimits
+      nofile:
+        soft: 32768
+        hard: 32768
     volumes:
       - "./service-account-file.json:/app/service-account-file.json"
     healthcheck:
@@ -56,13 +61,17 @@ services:
       redis-node-3m:
         condition: service_healthy
     environment: &bstats-backend-env
-      SHARD_NUMBER: "2"
+      SHARD_NUMBER: "0"
       PORT: "3001"
       REDIS_USE_CLUSTER: "true"
       REDIS_HOST: "redis-node-1m"
       REDIS_PORT: "6379"
-      TOTAL_SHARDS: "12"
+      PGHOST: "postgres"
+      PGPORT: "5432"
+      TOTAL_SHARDS: "6"
       WORD_BLOCKLIST: '["ely.su"]'
+    env_file:
+      - postgres.env
     <<: *x-logging
   bstats-backend-2:
     <<: *bstats-backend
@@ -89,40 +98,13 @@ services:
     environment:
       <<: *bstats-backend-env
       SHARD_NUMBER: "5"
-  bstats-backend-7:
-    <<: *bstats-backend
-    environment:
-      <<: *bstats-backend-env
-      SHARD_NUMBER: "6"
-  bstats-backend-8:
-    <<: *bstats-backend
-    environment:
-      <<: *bstats-backend-env
-      SHARD_NUMBER: "7"
-  bstats-backend-9:
-    <<: *bstats-backend
-    environment:
-      <<: *bstats-backend-env
-      SHARD_NUMBER: "8"
-  bstats-backend-10:
-    <<: *bstats-backend
-    environment:
-      <<: *bstats-backend-env
-      SHARD_NUMBER: "9"
-  bstats-backend-11:
-    <<: *bstats-backend
-    environment:
-      <<: *bstats-backend-env
-      SHARD_NUMBER: "10"
-  bstats-backend-12:
-    <<: *bstats-backend
-    environment:
-      <<: *bstats-backend-env
-      SHARD_NUMBER: "11"
 
   # An nginx server for load balancing the backend services
   nginx-backend:
     image: nginx:latest
+    restart: unless-stopped
+    ulimits:
+      <<: *ulimits
     volumes:
       - ./volumes/nginx-backend/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
@@ -132,12 +114,6 @@ services:
       - bstats-backend-4
       - bstats-backend-5
       - bstats-backend-6
-      - bstats-backend-7
-      - bstats-backend-8
-      - bstats-backend-9
-      - bstats-backend-10
-      - bstats-backend-11
-      - bstats-backend-12
     <<: *x-logging
 
   # The new bstats frontend
@@ -168,6 +144,9 @@ services:
   # The main nginx server
   nginx:
     image: nginx:1.23
+    restart: unless-stopped
+    ulimits:
+      <<: *ulimits
     volumes:
       - ./volumes/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     ports:
@@ -177,3 +156,53 @@ services:
       - bstats-legacy
       - nginx-backend
     <<: *x-logging
+
+  # A SQL database for historical data
+  postgres:
+    image: postgres:17
+    command: -c 'max_connections=200'
+    env_file:
+      - postgres.env
+    volumes:
+      - ./volumes/postgres/data:/var/lib/postgresql/data
+      - ./volumes/postgres/database-dump:/database-dump
+
+  # Backup Postgres data to AWS S3. The dump must be created before the backup,
+  # for example by using the following command while the database is running:
+  # docker compose exec postgres bash -c "pg_dump -U bstats -Z5 -j 10 -Fd bstats -f /database-dump"
+  postgres-backup:
+    image: d3fk/s3cmd:stable
+    profiles:
+      - tools
+    entrypoint: ""
+    working_dir: /
+    command:
+      [
+        "echo",
+        "-e",
+        "\\033[0;31mERROR\\033[0m Use \"docker compose run --rm postgres-backup ./backup.sh s3://BUCKET[/PREFIX]\" instead!",
+      ]
+    env_file:
+      - AWS.env
+    volumes:
+      - ./backup.sh:/backup.sh
+      - ./volumes/postgres/database-dump:/backup-src
+
+  # Backup the Redis data to AWS S3
+  redis-backup:
+    image: d3fk/s3cmd:stable
+    profiles:
+      - tools
+    entrypoint: ""
+    working_dir: /
+    command:
+      [
+        "echo",
+        "-e",
+        "\\033[0;31mERROR\\033[0m Use \"docker compose run --rm redis-backup ./backup.sh s3://BUCKET[/PREFIX]\" instead!",
+      ]
+    env_file:
+      - AWS.env
+    volumes:
+      - ./backup.sh:/backup.sh
+      - ./volumes/redis:/backup-src
